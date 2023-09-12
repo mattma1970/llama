@@ -32,7 +32,7 @@ import time
 from tqdm import tqdm
 
 from registry import FuncRegistry
-from webrtc_connection import connx
+from webrtc_connection import WebRTCAudioSteam, PyAudioStream, AudioConnection
 
 
 import logging
@@ -41,9 +41,10 @@ logger = logging.getLogger(__name__)
 
 func_registry = FuncRegistry() # Registry for callbacks
 
-
-
 from llama.tokenizer import Tokenizer as tok
+
+if 'conversation' not in st.session_state:
+	st.session_state['conversation']=' '
 
 #Globals
 FRAMES_PER_BUFFER = 4800  # units = samples
@@ -60,8 +61,7 @@ WEBRTC_CONNECTION = 'connx' # persitance of the connection and audio data from t
 st.title('Sqwak: Voice chat with Llama2-7B')
 
 # <head>
-if 'conversation' not in st.session_state:
-	st.session_state['conversation']=' '
+
 
 styl = """
 <style>
@@ -182,10 +182,8 @@ with status_label:
 with status_area:
 	st_status_bar = st_html(st.markdown('Startup..'),'statusText','Startup..')
 	st_text_output = st.empty()
-
-
-
 #</body>
+
 def token_counter(model_path: str):
 	'''Instantiate the tokenizer so we can keep track of the conversion history length in tokens.
 	args:
@@ -212,58 +210,10 @@ def stt_b64_encode(a: av.AudioFrame, channels: int=2):
 	a=np.ascontiguousarray(a.to_ndarray()[0][0::channels]) # audio channels are interleaved.
 	return base64.b64encode(a).decode('utf-8')
 
-def blocking_audio_read(webrtc: connx, timeout:int=30):
-	''' Gets all audio frames on the queue. Requires at least st.session_state['required_frames'] frames before returning. 
-		@args:
-			webrtc: connx object with connx.conn in playing state
-		@returns:
-			json: audio data in json format needed for assemblyai
-	'''
-	if not webrtc.conn.state.playing:
-		return None
-
-	audio_frames=[]
-	attempt_count =0
-	if webrtc.conn.audio_receiver:      
-		try:
-			'''Ensure a minimum number of frames for sending to STT API.
-				Doing this with get_frame is very slow and we quickly get queue overflow. Get_frames collect everything that is available on the queue 
-				Delays after this call result in frames accumulating in the frame_queue. Its important to make sure the rate of incoming frames >= rate that the frames are consumed by the getframes function.
-				To do a full fourier transform on this machine lead to a queue size of around 20 frames ( 0.4 s) Dropping the FFT reduces this to 6 frames.'''
-			while len(audio_frames)<webrtc.audio_settings['required_frames']:
-				audio_frames.extend(webrtc.conn.audio_receiver.get_frames(timeout=timeout))
-		except queue.Empty:
-			logger.warning(f"Audio queue failed to receive a input from the microphone within {timeout} seconds. This could be due to network congestion, audio device or driver problems.")
-
-	# If audioframes consumers have been blocked then make sure to limit the number of samples sent to the STT API.
-	if len(audio_frames) > MAX_FRAMES:
-		audio_frames=audio_frames[-MAX_FRAMES:]
-
-	# extract the bytes from the audioframes and encode them to base64 a requried by the STT API.
-	sb = [stt_b64_encode(audio_frame, webrtc.audio_settings['num_channels']) for audio_frame in audio_frames]
-	data = ''.join(sb)
-	json_data = json.dumps({"audio_data":data})
-
-	return json_data
-
-async def async_animated_status(message: str, wait_duration_ms: int = 200, end_condition: Callable = None):
-	'''Keep adding .. to the message until the end condition is true'''
-	while True:
-		st_status_bar.write(message)
-		if end_condition():
-			break
-		r=await asyncio.sleep(wait_duration_ms/1000)
-		if end_condition():
-			break
-		message+='.'
-		st_status_bar.write(message)
-		r=await asyncio.sleep(wait_duration_ms/1000)
-
-
-async def send_receive(args, webrtc: connx):
+async def send_receive(args, audio_stream: AudioConnection):
 	# Function that wraps 3 asynchronous functions: send audio bytes to STT API, receive text from STT API, send text to LLM endpoint
 	#Connect to the Assembly.ai transcription service
-	URL = f'wss://api.assemblyai.com/v2/realtime/ws?sample_rate={webrtc.audio_settings["sample_rate"]}'
+	URL = f'wss://api.assemblyai.com/v2/realtime/ws?sample_rate={audio_stream.audio_settings["sample_rate"]}'
 	async with websockets.connect(
 		URL,
 		extra_headers=(("Authorization", auth_key),),
@@ -276,11 +226,11 @@ async def send_receive(args, webrtc: connx):
 		session_begins = await _ws.recv() # defer until the connection to assembly ai is established.
 		st_status_bar.write("I'm listening :studio_microphone:")
 
-		async def send(args, webrtc: connx):
+		async def send(args, webrtc: AudioConnection):
 			while True:
 				try:
 					# Get minimum required amount of Audio for STT API. Note: this is blocking.
-					json_data = blocking_audio_read(webrtc,30)
+					json_data = audio_stream.processed_frames(timeout_sec=30)
 					# send to STT API and await response.
 					if json_data:
 						r= await _ws.send(json_data)
@@ -371,82 +321,8 @@ async def send_receive(args, webrtc: connx):
 				except Exception as e:
 					assert False, "Not a websocket 4008 error"
 	  
-		send_result, receive_result = await asyncio.gather(send(args, webrtc), receive(args))
+		send_result, receive_result = await asyncio.gather(send(args, audio_stream), receive(args))
 
-
-def setup_webRTC(use_ice_server: str = False, ice_servers: List[str]=['stun:stun.l.google.com:19302'], timeout_sec:float=60.0)-> connx:
-	'''
-		Setup webRTC connection and assign it the unique identifier "unique_id".
-		Blocks until connection established or timeout is reached.
-		@args:
-			ice_server: List[str]: list of turn or stun server URLs for webRTC routing. Defaults to free (insecure) STUN server provided by google of voip.
-			timeoout: flaot: time out for connection in seconds
-		@return:
-			webrtc_streamer: connection object regrdless of the playing state
-	'''
-	audio_settings=None
-	""" 	if 'conn_progress' not in func_registry.registry:
-		func_registry.register(finish)
-		r=await init() """
-	try:
-		unique_id = st.session_state['sess_unique_id']
-	except:		
-		unique_id = str(uuid4())[:10]
-		st.session_state['sess_unique_id'] = unique_id # persist it over the post backs
-
-	if use_ice_server:
-		# webRTc connection via a TURN server
-		webrtc_ctx = webrtc_streamer(
-			key=unique_id,
-			mode=WebRtcMode.SENDONLY, # ?? leads to instantiation of audio_reciever ??
-			audio_receiver_size=1024, # buffer size in aiortc packets (20 ms of samples)
-			rtc_configuration={
-				"iceServers": [{"urls": ice_servers}]},
-			media_stream_constraints = {"video": False,"audio":True},
-			desired_playing_state=True,  # startplaying upon rendering
-		)
-	else:
-		# webRTC connection where client and server are on same network.
-		webrtc_ctx = webrtc_streamer(
-			key=unique_id,
-			mode=WebRtcMode.SENDONLY, # ?? leads to instantiation of audio_reciever ??
-			audio_receiver_size=1024, # buffer size in aiortc packets (20 ms of samples)
-			media_stream_constraints = {"video": False,"audio":True},
-			desired_playing_state=True,  # startplaying upon rendering
-		)
-	
-	# Block until the connetion is established.
-	pbar = st.progress(timeout_sec)
-
-	for i in tqdm(range(timeout_sec)): # note this gets interrupted each time there is a postback
-		st_status_bar.write('Connecting to server')
-		if webrtc_ctx.state.playing:
-			pbar.empty()
-			break
-		time.sleep(1)
-		pbar.progress(i)
-	
-	if WEBRTC_CONNX_ESTABLISHED in st.session_state:
-		# If connection has already been established, just return it.
-		return st.session_state[WEBRTC_CONNECTION]
-	elif webrtc_ctx.state.playing and WEBRTC_CONNX_ESTABLISHED not in st.session_state:
-		# Collect details on the inbound audio frames to use in audio processing. 
-		# In aiortc a frame consists of 20ms of samples. Depending on the sample rate the number of samples will vary. 
-		# Clears the current frames queue
-		first_packet = webrtc_ctx.audio_receiver.get_frames(timeout=1)[0]
-		audio_settings = {
-							"required_frames":math.ceil(float(FRAMES_PER_BUFFER/first_packet.samples)),  #min frames required for AssemblyAi API. A good choice is 4800 samples
-							"sample_rate":first_packet.sample_rate,										 #sample rate of incoming sound
-							"num_channels":len(first_packet.layout.channels)							 # stereo or mono. AssemblyAI requires mono.
-							}
-		st.session_state[WEBRTC_CONNX_ESTABLISHED]=True # Flag that the settings have been collected.
-		webrtc_conn = connx(webrtc_ctx, audio_settings)
-		st.session_state[WEBRTC_CONNECTION]=webrtc_conn # Flag that the settings have been collected.
-		return webrtc_conn
-	else:
-		# return placeholder object
-		st_status_bar.write(f'Failed to connect to server within {timeout_sec} seconds. Please refresh page to try again.')
-		return connx(None,None)
 
 if __name__ == "__main__":
 
@@ -455,13 +331,18 @@ if __name__ == "__main__":
 	parser.add_argument('--system_keywords',type=str,default='system prompt', help='phrase used to start setting of system prompt')
 	parser.add_argument('--chat_history_length',type=int, default=3000, help='The number tokens in the context window that available to store conversation history')
 	parser.add_argument('--tokenizer_model_path', type=str, default='./tokenizer.model',help='used to calculate the tokens in the conversation history')
-	parser.add_argument('--mode', type=str, default='debug')
+	parser.add_argument('--mode', type=str, choices=['quiet','debug'], default='quiet',help='debug mode exposes results from STT API call')
 	parser.add_argument('--local','-l',action='store_true',default=False, help='Set this flag if no ICE server is needed.')
+	parser.add_argument('--stream_type',type=str, choices=['web','local'], default='web',help='Wether audio is sources from a browser or local machine.')
 
 	args = parser.parse_args()
 
-	webrtc_conn = setup_webRTC(use_ice_server=args.local, timeout_sec=60) # This is blocking
-		# Chat history window.
+	if args.stream_type=='web':
+		audio_stream = WebRTCAudioSteam(None,local=args.local, timeout_sec=60, st_status_bar=st_status_bar)
+	elif args.stream_type =='local':
+		audio_stream = PyAudioStream(None, st_status_bar=st_status_bar) #Default are in the class - TODO refactor to config file.
+
+	# Chat history window.
 	conversation_txt=st.text_area('**Chat Window**',st.session_state['conversation'],key='conversation_txt', height=500)
 	
 	#UI elements
@@ -473,7 +354,7 @@ if __name__ == "__main__":
 	
 	st.components.v1.html(js)
 	
-	if webrtc_conn.conn is not None:
-		print(f'Detected Audio Settings: {webrtc_conn.audio_settings}')
-		st_status_bar.write('webRTC connection established. Connecting to STT API...')
-		asyncio.run(send_receive(args, webrtc_conn))
+	if audio_stream.conn is not None:
+		print(f'Detected Audio Settings: {audio_stream.audio_settings}')
+		st_status_bar.write('Audio connections established. Connecting to STT API...')
+		asyncio.run(send_receive(args, audio_stream))

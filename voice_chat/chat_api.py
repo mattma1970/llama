@@ -24,31 +24,29 @@ class InferenceDialog(BaseModel):
 
 @app.post('/chat')
 def perform_inference(dialogs: InferenceDialog):
-    '''
-    Expects a valid json string
-    '''
+
     dialogs=dialogs['dialogs']
-    print(dialogs)
 
     results = llm.chat_completion(
-        dialogs,  # type: ignore
+        dialogs,  # List[List[dict]]
         max_gen_len=args.max_gen_len,
         temperature=args.temperature,
         top_p=args.top_p,
     )
 
-    for dialog, result in zip(dialogs, results):
+    """ for dialog, result in zip(dialogs, results):
         for msg in dialog:
             print(f"{msg['role'].capitalize()}: {msg['content']}\n")
         print(
             f"> {result['generation']['role'].capitalize()}: {result['generation']['content']}"
         )
-        print("\n==================================\n")
+        print("\n==================================\n") """
 
     return {"data":results}
 
 @app.get('/llm_params')
 def get_llm_params():
+    '''Get some model params that are needed by the app for chat history management.'''
     return {
             'max_seq_len':args.max_seq_len,
             'max_gen_len': args.max_gen_len,
@@ -74,8 +72,8 @@ if __name__ == "__main__":
     parser.add_argument('--tokenizer_path', type=str, default='./tokenizer.model')
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--top_p', type=float, default=0.4)
-    parser.add_argument('--max_seq_len',type=int, default=600)
-    parser.add_argument('--max_gen_len',type=int, default=200)
+    parser.add_argument('--max_seq_len',type=int, default=500)
+    parser.add_argument('--max_gen_len',type=int, default=None)
     parser.add_argument('--max_batch_size',type=int, default=4)
     args = parser.parse_args()
 

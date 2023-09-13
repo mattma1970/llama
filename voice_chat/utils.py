@@ -1,4 +1,38 @@
+'''
+Misc utility functions. mattma1970@gmail
+'''
+
+
 import streamlit as st
+from typing import List
+import base64
+import numpy as np
+import av
+
+
+def turn_sum(chat_history_lengths: List[List[int]])->int:
+	'''
+	Chat history lengths are stored as a List[List[int]] eg. [[19,200],[50,234]] where 
+	each inner list is the list of lengths, in tokens, of the content from system/user/assistant.
+	A 'turn' refers to a turn taken by one of these roles.
+	'''
+	return sum(sum(a) for a in chat_history_lengths)
+
+def endpoint(root_url: str, func: str):
+	return "/".join([root_url.strip("/"),func])
+
+
+def stt_b64_encode(a: av.AudioFrame, channels: int=2):
+	'''
+	Returns base64 encoded bytes from a single channel of the audioframe.
+	@args:
+		a: av.AudioFrame : A single AudioFrame that exposes a to_ndarray function for retrieving the raw bytes data.
+	@returns:
+		utf-8 encoded base64 data from dataframe.
+	'''
+	a=np.ascontiguousarray(a.to_ndarray()[0][0::channels]) # audio channels are interleaved.
+	return base64.b64encode(a).decode('utf-8')
+
 
 class st_html:
 	'''Extend st.write for various elements to render with unique class (css_class) for use by css selectors.'''

@@ -32,13 +32,14 @@ class AudioConnection(ABC):
 		pass
 	@abstractmethod
 	def _read_frames(self, timeout:float):
-		'''Method to get audio frames from the queue'''
+		'''Private method to get audio frames from the queue'''
 		pass
 	
 	@abstractmethod
 	def processed_frames(self, processing_func: Callable = None, **kwargs):
 		'''Post processing function frames -> JSON required for STT API/model'''
 		pass
+
 
 class WebRTCAudioSteam(AudioConnection):
 	'''
@@ -162,7 +163,7 @@ def setup_webRTC(use_ice_server: str = False, ice_servers: List[str]=['stun:stun
 			desired_playing_state=True,  # startplaying upon rendering
 		)
 	else:
-		# webRTC connection where client and server are on same network.
+		# webRTC connection where client and server are on same network. e.g when only sharing with people on the same network.
 		webrtc_ctx = webrtc_streamer(
 			key=unique_id,
 			mode=WebRtcMode.SENDONLY, # ?? leads to instantiation of audio_reciever ??
@@ -171,7 +172,7 @@ def setup_webRTC(use_ice_server: str = False, ice_servers: List[str]=['stun:stun
 			desired_playing_state=True,  # startplaying upon rendering
 		)
 	
-	# Block until the connetion is established.	
+	# Block until the connetion is established.	App is useless without a connectoin so blocking is justified.
 	pbar = st.progress(timeout_sec)
 	for i in tqdm(range(timeout_sec)): # note this gets interrupted each time there is a postback event.
 		st_status_bar.write('Connecting to server. Please be patient.')
@@ -182,7 +183,7 @@ def setup_webRTC(use_ice_server: str = False, ice_servers: List[str]=['stun:stun
 		pbar.progress(i)
 	
 	if WEBRTC_CONNX_ESTABLISHED in st.session_state:
-		# If connection has already been established, just return it.
+		# If connection has already been established, just return it and the settings.
 		return st.session_state[WEBRTC_CONNECTION]
 	elif webrtc_ctx.state.playing and WEBRTC_CONNX_ESTABLISHED not in st.session_state:
 		# Collect details on the inbound audio frames to use in audio processing. 

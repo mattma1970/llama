@@ -12,21 +12,21 @@ app=FastAPI()
 class ChatInferencePrompt(BaseModel):
     role: str
     content: str
-
     def __getitem__(self, item):
         return getattr(self,item)
 
 class InferenceDialog(BaseModel):
-    dialogs: List[ChatInferencePrompt]
+    dialogs: List[List[ChatInferencePrompt]]
     def __getitem__(self, item):
         return getattr(self,item)
 
 @app.post('/chat')
-def perform_inference(dialogs:InferenceDialog):
-    
-    dialogs=[dialogs['dialogs']] # expects list of list 
-
-    #print(f'Dialogs',dialogs)
+def perform_inference(dialogs: InferenceDialog):
+    '''
+    Expects a valid json string
+    '''
+    dialogs=dialogs['dialogs']
+    print(dialogs)
 
     results = llm.chat_completion(
         dialogs,  # type: ignore
@@ -63,8 +63,8 @@ if __name__ == "__main__":
     parser.add_argument('--tokenizer_path', type=str, default='./tokenizer.model')
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--top_p', type=float, default=0.4)
-    parser.add_argument('--max_seq_len',type=int, default=512)
-    parser.add_argument('--max_gen_len',type=int, default=None)
+    parser.add_argument('--max_seq_len',type=int, default=2000)
+    parser.add_argument('--max_gen_len',type=int, default=200)
     parser.add_argument('--max_batch_size',type=int, default=4)
     args = parser.parse_args()
 

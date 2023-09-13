@@ -32,7 +32,8 @@ import time
 from tqdm import tqdm
 
 from registry import FuncRegistry
-from webrtc_connection import WebRTCAudioSteam, PyAudioStream, AudioConnection
+from voice_chat.audio_connections import WebRTCAudioSteam, PyAudioStream, AudioConnection
+from utils import st_html
 
 
 import logging
@@ -43,9 +44,6 @@ func_registry = FuncRegistry() # Registry for callbacks
 
 from llama.tokenizer import Tokenizer as tok
 
-if 'conversation' not in st.session_state:
-	st.session_state['conversation']=' '
-
 #Globals
 FRAMES_PER_BUFFER = 4800  # units = samples
 MAX_FRAMES = 99 # units = Frames NOT samples. For streamlit_webrtc 1 frame=0.02 seconds. AssemblyAI, maximum duration of audio posted is 2 seconds.
@@ -54,15 +52,22 @@ MAX_FRAMES = 99 # units = Frames NOT samples. For streamlit_webrtc 1 frame=0.02 
 #Session_state_keys
 WEBRTC_CONNX_ESTABLISHED = 'webRTC_runtime_configuration_is_set' # Flag used  to indicate that the audio_settings of the inbound audio have been collected. This is done once when the connection is established.
 WEBRTC_CONNECTION = 'connx' # persitance of the connection and audio data from the streamer.
+CHAT_HISTORY = 'chat_dialogs' # list of list of dialogs to submit to LLM i.e. dialog history.
+CHAT_HISTORY_LENGTHS = 'chat_history'
+CONVERSATION='conversation' # clean text for display
 
+if 'conversation' not in st.session_state:
+	st.session_state['conversation']=' '
+
+if CHAT_HISTORY not in st.session_state:
+	st.session_state[CHAT_HISTORY]=[]
+	st.session_state[CHAT_HISTORY_LENGTHS]=[]
 
 #### Strealit UI ####
-
 st.title('Sqwak: Voice chat with Llama2-7B')
 
 # <head>
-
-
+# CSS styling for streamlit elements.
 styl = """
 <style>
     .stButton{
@@ -128,51 +133,8 @@ js = f"""
     scroll({len(st.session_state['conversation'])})
 </script>
 """
-
 #</head>
-
 #<body>
-
-class st_html:
-	'''Extend st.write for various elements to render with unique class (css_class) for use by css selectors.'''
-	def __init__(self, element, css_class: st, text: str = ' ', wrap: bool=True):
-		'''
-		Args:
-			element: obj: If text is passed in then create a st.empty() as the element, otherwise use what was passed in.
-			css_class: str: unique class name to be consumed by css selectors.
-			text: str: initialization text.
-			wrap: bool: indicate if the div tags should wrap the text of just be a marker.
-		'''
-		self.element = element
-		self.css_class = css_class
-		self.wrap = wrap
-		self.write(text)
-
-
-	@property
-	def element(self):
-		return self._element
-	
-	@element.setter
-	def element(self, obj):
-		if isinstance(obj,str):
-			self._element=st.empty()
-		else:
-			self._element=obj
-
-	def write(self, text: str):
-		if self.wrap:
-			text =f"<div class='{self.css_class}'>{text}</div>"
-		else:
-			text= f"<div class='{self.css_class} />{text}"
-
-		self.element.write(text, unsafe_allow_html=True)
-		return str
-	
-	def empty(self):
-		self.element.empty()
-		return None
-
 
 status_label, status_area = st.columns([0.2,0.8])
 with status_label:
@@ -240,7 +202,6 @@ async def send_receive(args, audio_stream: AudioConnection):
 					break
 				except Exception as e:
 					assert False, "Not a websocket 4008 error"
-
 				r= await asyncio.sleep(0.01)	  
 			return True
  
@@ -250,9 +211,10 @@ async def send_receive(args, audio_stream: AudioConnection):
 
 			system_prompt=None # Sytem prompt to be used to instruct Lllama2 how to respond
 			
-			chat_history = [] # Accumulated conversation.
-			chat_history_length = [] # the number of tokens in teh accumulated chat history for each turn.
-			tok_counter = token_counter(args.tokenizer_model_path) # functino that counts tokens in the chat_history
+			chat_history = st.session_state[CHAT_HISTORY] # Accumulated dialogs (chat history)
+			chat_history_length = st.session_state[CHAT_HISTORY_LENGTHS] # the number of tokens in teh accumulated chat history for each turn.
+
+			tok_counter = token_counter(args.tokenizer_model_path) # function that counts tokens in the chat_history
 
 			sys_keywords = args.system_keywords.lower().strip()
 			
@@ -264,10 +226,8 @@ async def send_receive(args, audio_stream: AudioConnection):
 					if json.loads(result_str)['message_type']=='FinalTranscript' and json.loads(result_str)['text']!="" :
 						st_user_input.write(json.loads(result_str)['text'])
 
-						st.session_state['conversation']+=f'\nYou: \n{json.loads(result_str)["text"]}'
-						#conversation_txt.value=st.session_state['conversation']
-
-						
+						st.session_state['conversation']+=f'\n\nYou: \n {json.loads(result_str)["text"]}' # Rendered into text_area markup in head.
+					
 						# If 'system prompt' keyword, then store it and use it when submitting a dialog to the chat bot.
 						if sys_keywords in json.loads(result_str)['text'].lower():
 							system_prompt={"role":"system","content":f"{re.sub(sys_keywords,'',json.loads(result_str)['text']).strip()}"}
@@ -281,37 +241,42 @@ async def send_receive(args, audio_stream: AudioConnection):
 								prompt = [{"role":"user","content":f"{json.loads(result_str)['text']}"}]
 							
 							# track the conversation history
-							""" if chat_history:
-								chat_history.extend(prompt)
+							if len(chat_history)>0:
+								dialog = {"dialogs":[chat_history,prompt]}
+							else:
+								dialog = {"dialogs":[prompt]}
+
+							async with aiohttp.ClientSession() as session: #TODO make this one clientsession ber instance not per request for latency reasons.
+								async with session.post(url=args.llm_endpoint,json={"dialogs":[prompt]}) as r:
+									data = await r.json()
+									try:
+										chat_response=data['data'][0]['generation']['content']
+									except Exception as e:
+										logger.error(f'post error:{e.message}; LLM error message :{e["error"]}')
+									st.session_state['conversation']+=f'\n\nLLM: \n {chat_response}'
+
+									st_status_bar.write('..your turn')
+
+							# add response to the history
+							if chat_history:
+								prompt.extend([{"role":"assistant","content":chat_response}]) # prompt now consists of content from each role (system(optional),user, assistant)
+								chat_history.append(prompt)
 								chat_history_length.append(tok_counter(prompt))
 							else:
 								chat_history_length=[tok_counter(prompt)]
 								chat_history = prompt
 
 							# maintain chat history 'queue' length
-							while sum(chat_history_length)>args.chat_history_length:
+							""" while sum(chat_history_length)>args.chat_history_length:
 								chat_history=chat_history[1:]
-								chat_history_length=chat_history_length[1:]														
-							"""
-
-							async with aiohttp.ClientSession() as session: #TODO make this one clientsession ber instance not per request for latency reasons.
-								async with session.post(url=args.llm_endpoint,json={"dialogs":prompt}) as r:
-									data = await r.json()
-									try:
-										chat_response=data['data'][0]['generation']['content']
-									except Exception as e:
-										logger.error(f'post error:{e.message}; LLM error message :{e["error"]}')
-
-									st.session_state['conversation']+=f'\nLLM: \n {chat_response}'
-									#conversation_txt.value=st.session_state['conversation']
-									st_status_bar.write('..your turn')
-
-							# add response to the history
-							chat_history.extend([{"role":"assistant","content":chat_response}])
+								chat_history_length=chat_history_length[1:]	 """	
+						
+							st.session_state[CHAT_HISTORY] =chat_history # Accumulated dialogs (chat history)
+							st.session_state[CHAT_HISTORY_LENGTHS] = chat_history_length # the number of tokens in teh accumulated chat history for each turn.
 
 							#reset system prompt as we don't need to include it for every turn of the conversation
 							system_prompt = None
-							st.experimental_rerun()
+							st.experimental_rerun() # force postback.
 						
 				except websockets.exceptions.ConnectionClosedError as e:
 					print(e)
@@ -329,11 +294,11 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--llm_endpoint', type=str, default = 'http://localhost:8080/chat', help='URL for REST API serving LLM')
 	parser.add_argument('--system_keywords',type=str,default='system prompt', help='phrase used to start setting of system prompt')
-	parser.add_argument('--chat_history_length',type=int, default=3000, help='The number tokens in the context window that available to store conversation history')
+	parser.add_argument('--chat_history_length',type=int, default=4000, help='The number tokens in the context window that available to store conversation history')
 	parser.add_argument('--tokenizer_model_path', type=str, default='./tokenizer.model',help='used to calculate the tokens in the conversation history')
 	parser.add_argument('--mode', type=str, choices=['quiet','debug'], default='quiet',help='debug mode exposes results from STT API call')
 	parser.add_argument('--local','-l',action='store_true',default=False, help='Set this flag if no ICE server is needed.')
-	parser.add_argument('--stream_type',type=str, choices=['web','local'], default='web',help='Wether audio is sources from a browser or local machine.')
+	parser.add_argument('--stream_type',type=str, choices=['web','local'], default='local',help='Wether audio is sources from a browser or local machine.')
 
 	args = parser.parse_args()
 

@@ -18,7 +18,7 @@ run_remote_web_chat: voice_chat/local_web_chat_client.py
 	@echo 'Start voice chat via remote browser - requires the https connection; use ssl-proxy'
 	. venv/bin/activate; \
 	voice_chat/Ssl/ssl-proxy -from 0.0.0.0:8502 -to 0.0.0.0:8501 & \
-	streamlit run voice_chat/local_web_chat_client.py --  --mode $(MODE)
+	streamlit run voice_chat/local_web_chat_client.py --  --mode $(MODE) --stream_type web
 run_local_chat:
 	@echo 'Run voice chat with audio source from local machine. Uses PuAudio and requires that a sound server be running (e.g. PulseAudio )'
 	. venv/bin/activate; \

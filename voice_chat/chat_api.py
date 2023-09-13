@@ -16,6 +16,8 @@ class ChatInferencePrompt(BaseModel):
         return getattr(self,item)
 
 class InferenceDialog(BaseModel):
+    # Important. Each inner list is a complete conversation, ending with a 'user' prompt. The LLM accepts multiple conversations.
+    # This shouldnt be confused with the List[List[dict]] used to represent a single conversation in the chat app's chat_history.
     dialogs: List[List[ChatInferencePrompt]]
     def __getitem__(self, item):
         return getattr(self,item)
@@ -45,6 +47,15 @@ def perform_inference(dialogs: InferenceDialog):
 
     return {"data":results}
 
+@app.get('/llm_params')
+def get_llm_params():
+    return {
+            'max_seq_len':args.max_seq_len,
+            'max_gen_len': args.max_gen_len,
+            'top_p':args.top_p,
+            'max_batch_size':args.max_batch_size
+            }
+
 def build_llm(args):
     llm = Llama.build(
         ckpt_dir= os.path.join(args.root_path,args.model_path),
@@ -63,7 +74,7 @@ if __name__ == "__main__":
     parser.add_argument('--tokenizer_path', type=str, default='./tokenizer.model')
     parser.add_argument('--temperature', type=float, default=0.6)
     parser.add_argument('--top_p', type=float, default=0.4)
-    parser.add_argument('--max_seq_len',type=int, default=2000)
+    parser.add_argument('--max_seq_len',type=int, default=600)
     parser.add_argument('--max_gen_len',type=int, default=200)
     parser.add_argument('--max_batch_size',type=int, default=4)
     args = parser.parse_args()

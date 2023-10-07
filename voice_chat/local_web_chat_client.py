@@ -274,6 +274,7 @@ if __name__ == "__main__":
 	parser.add_argument('--llm_endpoint', type=str, default = 'http://localhost:8080/', help='URL for REST API serving LLM')
 	parser.add_argument('--system_keywords',type=str,default='system prompt', help='phrase used to start setting of system prompt')
 	parser.add_argument('--max_history_length',type=int, default=512, help='The number tokens in the context window that available to store conversation history. Must <= maximum sequence length setting for the LLM.')
+	parser.add_argument('--gen_buffer_length',type=int, default = 100, help='The number of tokens left available in the context window for the LLM to generate text.' )
 	parser.add_argument('--tokenizer_model_path', type=str, default='./tokenizer.model',help='used to calculate the tokens in the conversation history')
 	parser.add_argument('--mode', type=str, choices=['quiet','debug'], default='quiet',help='debug mode exposes results from STT API call')
 	parser.add_argument('--local','-l',action='store_true',default=False, help='Set this flag if no ICE server is needed.')

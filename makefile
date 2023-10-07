@@ -6,8 +6,13 @@ MODE := quiet
 
 run_api:
 	@echo "Starting Llama 2 API"
-	. venv/bin/activate; \
+	. .venv/bin/activate; \
 	torchrun --nproc_per_node 1 voice_chat/chat_api.py --model_path llama-2-7b-chat --tokenizer_path tokenizer.model --max_batch_size 6;
+
+run_api_debug:
+	@echo "Starting Llama 2 API"
+	. .venv/bin/activate; \
+	torchrun --nproc_per_node 1 voice_chat/chat_api.py --model_path llama-2-7b-chat --tokenizer_path tokenizer.model --max_batch_size 6 --debug;
 
 run_local_web_chat: voice_chat/local_web_chat_client.py
 	@echo 'Start voice chat via browser - client and server co-located and so no TURN server is needed.'

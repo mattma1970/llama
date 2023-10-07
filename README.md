@@ -1,3 +1,18 @@
+
+# Voicebot built on local instance of llama2
+
+In this project I am building a voice experience for an LLM with agency. The project is primarily a tool to learn a LLM application stack and it will be build up the complexity of the app in stages. 
+
+The initial project uses a locally installed instnace of Llama2 and will use Assembly.ai for STT. Agent framework I am using a customized version of (Griptape.ai )[https://www.griptape.ai/] with a driver to be access the local model rather than via a API endpoint from HF. 
+
+To install the customized version of griptape:
+
+```
+clone ```
+
+
+
+
 # Llama 2
 
 We are unlocking the power of large language models. Our latest version of Llama is now accessible to individuals, creators, researchers and businesses of all sizes so that they can experiment, innovate and scale their ideas responsibly. 

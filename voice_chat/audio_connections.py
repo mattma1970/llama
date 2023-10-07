@@ -189,7 +189,7 @@ def setup_webRTC(use_ice_server: str = False, ice_servers: List[str]=['stun:stun
 		# Collect details on the inbound audio frames to use in audio processing. 
 		# In aiortc a frame consists of 20ms of samples. Depending on the sample rate the number of samples will vary. 
 		# Clears the current frames queue
-		first_packet = webrtc_ctx.audio_receiver.get_frames(timeout=1)[0]
+		first_packet = webrtc_ctx.audio_receiver.get_frames(timeout=10)[0]
 		audio_settings = {
 							"required_frames":math.ceil(float(FRAMES_PER_BUFFER/first_packet.samples)),  #min frames required for AssemblyAi API. A good choice is 4800 samples
 							"sample_rate":first_packet.sample_rate,										 #sample rate of incoming sound

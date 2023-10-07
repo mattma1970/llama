@@ -1,3 +1,10 @@
+'''
+Voice interface for chatting with Llama2 installed on the local machine only. 
+For voice interface on LLama2 hosted on a remote server, see local_web_chat_client.py
+(c) mattma1970@gmail.com
+
+'''
+
 import websockets
 import asyncio
 import base64
@@ -110,11 +117,6 @@ async def send_receive(args):
 		async def receive(args):
 			
 			system_prompt=None # Sytem prompt to be used to instruct Lllama2 how to respond
-			chat_history = [] # Accumulated conversation.
-			chat_history_length = [] # the number of tokens in teh accumulated chat history for each turn.
-
-			tok_counter = token_counter(args.tokenizer_model_path) # functino that counts tokens in the chat_history
-
 			sys_keywords = args.system_keywords.lower().strip()
 			
 			while st.session_state['run']:
@@ -127,33 +129,17 @@ async def send_receive(args):
 							system_prompt={"role":"system","content":f"{re.sub(sys_keywords,'',json.loads(result_str)['text']).strip()}"}
 						else:
 							st.markdown('sending to chatbot...')
-							if system_prompt is not None:
+							if system_prompt is not None: #TODO new strategy needed.  
 								# prepend the system prompt to the dialog.
 								# Note that the llama2 model appears to keep track of the prior conversation ( up to the context window length - TBC)
 								prompt = [system_prompt,{"role":"user","content":f"{json.loads(result_str)['text']}"}]
 							else:
 								prompt = [{"role":"user","content":f"{json.loads(result_str)['text']}"}]
-							
-							# track the conversation history
-							if chat_history:
-								chat_history.extend(prompt)
-								chat_history_length.append(tok_counter(prompt))
-							else:
-								chat_history_length=[tok_counter(prompt)]
-								chat_history = prompt
-
-							# maintain chat history 'queue' length
-							while sum(chat_history_length)>args.chat_history_length:
-								chat_history=chat_history[1:]
-								chat_history_length=chat_history_length[1:]
-														
-							r = requests.post(url=args.llm_endpoint, json={"dialogs":chat_history})
+																				
+							r = requests.post(url=f'{args.llm_endpoint.strip("/")}/{args.task}', json=prompt)
 							data = r.json()
-							chat_response=data['data'][0]['generation']['content']
+							chat_response=data['data']
 							st.markdown(chat_response)
-
-							# add response to the history
-							chat_history.extend([{"role":"assistant","content":chat_response}])
 
 							#reset system prompt as we don't need to include it for every turn of the conversation
 							system_prompt = None
@@ -169,14 +155,11 @@ async def send_receive(args):
 		send_result, receive_result = await asyncio.gather(send(args), receive(args))
 
 
-
-
-
-
 if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser()
-	parser.add_argument('--llm_endpoint', type=str, default = 'http://localhost:8080/chat', help='URL for REST API serving LLM')
+	parser.add_argument('--llm_endpoint', type=str, default = 'http://localhost:8080/', help='URL for REST API serving LLM')
+	parser.add_argument('--task', type=str, default='chat_with_agent', help='Task to perform, also name of endpoint')
 	parser.add_argument('--system_keywords',type=str,default='system prompt', help='phrase used to start setting of system prompt')
 	parser.add_argument('--chat_history_length',type=int, default=3000, help='The number tokens in the context window that available to store conversation history')
 	parser.add_argument('--tokenizer_model_path', type=str, default='./tokenizer.model',help='used to calculate the tokens in the conversation history')

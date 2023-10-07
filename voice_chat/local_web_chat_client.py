@@ -9,7 +9,7 @@ The LLM used is a Llama 2 servers via a fastAPI endpoint on the same server as t
 import streamlit as st
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
 import av # Python bindings for ffmpeg
-import cv2
+#import cv2
 import pydub  # for processing dataframes returned
 import numpy as np
 
@@ -35,9 +35,9 @@ import time
 from tqdm import tqdm
 
 from registry import FuncRegistry
-from voice_chat.audio_connections import WebRTCAudioSteam, PyAudioStream, AudioConnection
+from audio_connections import WebRTCAudioSteam, PyAudioStream, AudioConnection
 from utils import st_html, turn_sum, endpoint
-from voice_chat.history_manager import history as History
+from history_manager import history as History
 
 
 import logging
@@ -50,6 +50,7 @@ from llama.tokenizer import Tokenizer as tok
 #Globals
 FRAMES_PER_BUFFER = 4800  # units = samples
 MAX_FRAMES = 99 # units = Frames NOT samples. For streamlit_webrtc 1 frame=0.02 seconds. AssemblyAI, maximum duration of audio posted is 2 seconds.
+SESSION_KEY ='SESSION_ID'
 
 
 #Session_state_keys
@@ -61,7 +62,7 @@ if 'conversation' not in st.session_state:
 	st.session_state['conversation']=' '
 
 # Strealit UI #
-st.title('Sqwak: Voice chat with Llama2-7B')
+st.title('Yakwith.ai: Voice interface for Llama2-7B')
 
 # <head>
 # CSS styling for streamlit elements.
@@ -197,10 +198,7 @@ async def send_receive(args, audio_stream: AudioConnection):
 
 			system_prompt=None # Sytem prompt to be used to instruct Lllama2 how to respond
 			sys_keywords = args.system_keywords.lower().strip()
-
-			tok_counter = token_counter(args.tokenizer_model_path) 				# couter for tokens using the LLM tokenizer  			
-			history = History(tok_counter, args.max_history_length) 			# Session_state back chat history. Reload it every postback
-			
+		
 			while True:
 				try:
 					result_str = await _ws.recv()
@@ -208,9 +206,7 @@ async def send_receive(args, audio_stream: AudioConnection):
 						st_text_output.write(result_str)
 					if json.loads(result_str)['message_type']=='FinalTranscript' and json.loads(result_str)['text']!="" :
 						st_user_input.write(json.loads(result_str)['text'])
-
-						st.session_state['conversation']+=f'\n\nYou: \n {json.loads(result_str)["text"]}' # Rendered into text_area markup in head.
-					
+				
 						# If 'system prompt' keyword, then store it and use it when submitting a dialog to the chat bot.
 						if sys_keywords in json.loads(result_str)['text'].lower():
 							system_content = re.sub(sys_keywords,'',json.loads(result_str)['text']).strip()
@@ -227,54 +223,40 @@ async def send_receive(args, audio_stream: AudioConnection):
 								prompt = [system_prompt,{"role":"user","content":f"{json.loads(result_str)['text']}"}]
 							else:
 								prompt = [{"role":"user","content":f"{json.loads(result_str)['text']}"}]
-
-							history.add(prompt)
-							history.truncate_history()
-
-							# Prepare the conversation history for sending to LLM. Llama expects List[List[dict]] (See pydantic model in chat_api.py)
-							# Note this only allows for a single conversation whereas the LLM may be able to take multiple conversations at the same time.
-							dialog = {"dialogs":[list(chain(*history.chat_history))]}
+							
+							payload = {"prompt":prompt, 'session_id':st.session_state[SESSION_KEY]}
 						
 							# Non-blocking call to the LLM API allows voice and STT to continue running while the LLM responds.
 							async with aiohttp.ClientSession() as session: #TODO make this one clientsession per instance not per request for latency reasons.
-								async with session.post(url=endpoint(args.llm_endpoint,'chat'),json=dialog) as r:
+								async with session.post(url=endpoint(args.endpoint_base_URL,args.task),json=payload) as r:
 									try:
 										data = await r.json()
-										chat_response=data['data'][0]['generation']['content']
+										chat_response=data['data']
 									except KeyError as e:
 										logger.error(f'Key error. Return message from endpoint: {data}')
 									except Exception as e:
 										logger.error(f'post error:{e.message}; LLM error message :{e["error"]}')
 
-									st.session_state['conversation']+=f'\n\nLLM: \n {chat_response}'
-
 									st_status_bar.write('thinking, thinking...')
-
-							# Add response from LL to chat history.
-							assistant_dialog = [{"role":"assistant","content":chat_response}]
-							history.extend_last(assistant_dialog)
+									st.session_state['conversation']+=f'\n\nLLM: \n {chat_response}'
 					
 							#reset system prompt as we don't need to include it for every turn of the conversation
 							system_prompt = None
 							st.experimental_rerun() # force postback.
 						
 				except websockets.exceptions.ConnectionClosedError as e:
-					print(e)
-					assert e.code == 4008
-					break
-
+					print(f'Websocker error:{e}')
 				except Exception as e:
-					assert False, "Not a websocket 4008 error"
-	  
+					print(f'Non-websocket error:{e}')
+	
 		send_result, receive_result = await asyncio.gather(send(args, audio_stream), receive(args))
 
 if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser()
-	parser.add_argument('--llm_endpoint', type=str, default = 'http://localhost:8080/', help='URL for REST API serving LLM')
+	parser.add_argument('--endpoint_base_URL', type=str, default = 'http://localhost:8080/', help='URL for REST API serving LLM')
+	parser.add_argument('--task', type =str, default='chat_with_agent',help='The task name which is alsow the endpoint name.')
 	parser.add_argument('--system_keywords',type=str,default='system prompt', help='phrase used to start setting of system prompt')
-	parser.add_argument('--max_history_length',type=int, default=512, help='The number tokens in the context window that available to store conversation history. Must <= maximum sequence length setting for the LLM.')
-	parser.add_argument('--gen_buffer_length',type=int, default = 100, help='The number of tokens left available in the context window for the LLM to generate text.' )
 	parser.add_argument('--tokenizer_model_path', type=str, default='./tokenizer.model',help='used to calculate the tokens in the conversation history')
 	parser.add_argument('--mode', type=str, choices=['quiet','debug'], default='quiet',help='debug mode exposes results from STT API call')
 	parser.add_argument('--local','-l',action='store_true',default=False, help='Set this flag if no ICE server is needed.')
@@ -285,7 +267,7 @@ if __name__ == "__main__":
 	# Override come params if they are supplied by the llm_params endpoint.
 	llm_params = None
 	try:
-		llm_params = json.loads(requests.get(endpoint(args.llm_endpoint,'llm_params')).content)
+		llm_params = json.loads(requests.get(endpoint(args.base,'endpoint_base_URL')).content)
 		logger.info(f"Max sequence length:{llm_params['max_seq_len']}")
 		args.max_history_length = llm_params['max_seq_len'] # makes sure that max context window in LLM is used in managing the length of the chat_history. 
 	except Exception as e:
@@ -309,6 +291,10 @@ if __name__ == "__main__":
 	#render the javascript for the customer UI elements.
 	st.components.v1.html(js)
 	
+	#Set session_id for this session.
+	if SESSION_KEY not in st.session_state:
+		st.session_state[SESSION_KEY] = str(uuid4())
+
 	if audio_stream.conn is not None:
 		print(f'Detected Audio Settings: {audio_stream.audio_settings}')
 		st_status_bar.write('Audio connections established. Connecting to STT API...')

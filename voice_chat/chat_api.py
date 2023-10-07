@@ -7,10 +7,12 @@ import argparse
 import os
 import json
 import logging
+from dataclasses import dataclass
 
 from griptape.structures import Agent
 from griptape.utils import Chat #   <-- Added Chat
 from griptape.drivers import LocalLlamaPromptDriver
+from griptape.utils.prompt_stack import PromptStack
 
 app=FastAPI()
 logger = logging.getLogger(__name__)
@@ -29,12 +31,23 @@ class InferenceDialog(BaseModel):
     def __getitem__(self, item):
         return getattr(self,item)
 
+@dataclass
+class SessionDialog:
+    prompt: List[ChatInferencePrompt]
+    session_id: str # persisted session_id
+
+
+_ALL_TASKS=['chat_with_agent:post','chat:post','llm_params:get']
+
 @app.post('/chat')
 def perform_inference(dialogs: InferenceDialog):
+    '''
+        Post processes by default - DEPRECATED
+    '''
 
     dialogs=dialogs['dialogs']
 
-    results = llm.chat_completion(
+    response = llm.chat_completion(
         dialogs,  # List[List[dict]]
         max_gen_len=args.max_gen_len,
         temperature=args.temperature,
@@ -42,7 +55,7 @@ def perform_inference(dialogs: InferenceDialog):
     )
 
     if args.debug:
-        for dialog, result in zip(dialogs, results):
+        for dialog, result in zip(dialogs, response):
             for msg in dialog:
                 print(f"{msg['role'].capitalize()}: {msg['content']}\n")
             print(
@@ -50,21 +63,40 @@ def perform_inference(dialogs: InferenceDialog):
             )
             print("\n==================================\n")
 
-    return {"data":results}
+    response=response['data'][0]['generation']['content']
+
+    return {"data":response}
+
+
 
 @app.post('/chat_with_agent')
-def chat_using_agent(dialogs: ChatInferencePrompt):
+def chat_using_agent(dialogs: SessionDialog) -> Dict[str,str]:
     '''
         Chat text_generation using griptape agent.
         Conversation memory is managed by Griptape so only the new question is passed in. 
         Args:
-            question: ChatInferencePrompt: the new user input to process
-            UID: str: a unique hash that will be used to persist the prompt_stack inbetween API calls. NOT YET IMPLEMENTED
+            dialogs: SessionDialog[prompt:str, session_id:str)
+                     prompt: List[ChatInferencePrompt]
+                     session: str: uuid4, a persisted session_id
         Returns: {'data': results}: chat completion results as dictionary. Mimics response from direct call to the models API.      
     '''
-    
-    user_input=dialogs.content
-    print(user_input)
+
+    '''Retrieve the agent for the requestor. The agent also contains the conversation memory.'''
+    session_id:str = dialogs['session_id']
+    if session_id not in agent_registry:
+        agent_registry[session_id] = build_agent(llm,args)
+    agent: Agent = agent_registry[session_id] 
+
+
+    if len(dialogs['prompt'])>1 and dialogs['prompt'][0].role==PromptStack.SYSTEM_ROLE:
+        system_prompt = dialogs['prompt'][0]
+        user_input=dialogs['prompt'][1].content
+        raise Warning('Replacing System Prompt is not yet implemented.')
+    else:
+        system_prompt = None
+        user_input=dialogs['prompt'][0].content
+   
+    #print(user_input)
     response = agent.run(user_input).output.to_text()
     return {'data':response}
 
@@ -75,9 +107,9 @@ def get_llm_params():
             'max_seq_len':args.max_seq_len,
             'max_gen_len': args.max_gen_len,
             'top_p':args.top_p,
-            'max_batch_size':args.max_batch_size
+            'max_batch_size':args.max_batch_size,
+            'supported_tasks': _ALL_TASKS
             }
-
 
 ''' ===== AI-staff manufacturing facility ==== '''
 
@@ -98,7 +130,6 @@ def build_agent(model, args):
     agent = Agent(logger_level=logging.ERROR, prompt_driver=LocalLlamaPromptDriver(inference_resource=model, task='chat', tokenizer_path=args.tokenizer_path, params = params))
     return agent
 
-
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -115,6 +146,7 @@ if __name__ == "__main__":
 
     llm=build_llm(args)
     agent = build_agent(llm,args)
+    agent_registry = {}
 
     import uvicorn
     uvicorn.run(app, host='0.0.0.0', port=8080)
